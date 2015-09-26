@@ -10,6 +10,7 @@ BELIEVEStart.prototype = {
 
 	preload: function() {
 		game.load.bitmapFont('carrier_command', 'assets/carrier_command.png', 'assets/carrier_command.xml');		
+
 	},
 
 	create: function() {
@@ -42,8 +43,11 @@ var BELIEVE = function(game) {
 	this.shieldSprite = null;
 	this.others = null;
 	this.scoreboard = null;
-	this.scorehint = null;
 	this.instructionboard = null;
+	this.scorepop = null;
+	this.energybar = null;
+	this.energylimit = null;
+	this.emitter = null;
 
 	this.cursors = null;
 	this.spawnEvent = null;
@@ -52,8 +56,12 @@ var BELIEVE = function(game) {
 	this.scorenotify = null;
 	this.respawn = 0;
 	this.spawnSpeed = 0;
+	this.energylimitActivate = 0;
+	this.currentHarm = 0;
 
 	this.instructions = true;
+
+	this.learningSpeed = 3;
 
 	this.CONF = {
 		STAGE_BACKGROUND: 0x333333,
@@ -63,7 +71,10 @@ var BELIEVE = function(game) {
 		MIN_RESPAWN: 500,
 		RESPAWN_RAND: 500,
 
+		SHIELD_START_RADIUS: 160,
 		SHIELD_RADIUS: 100,
+		SHIELD_MAX_RADIUS: 200,
+		SHIELD_RADIUS_INC: 10,
 		SHIELD_BACKGROUND: 0x888888,
 		SHIELD_BACKGROUND_ALPHA: 0.3,
 		SHIELD_LINE_WIDTH: 3,
@@ -82,7 +93,8 @@ var BELIEVE = function(game) {
 		PLAYER_ACTIVE_ALPHA: 1,
 		PLAYER_HEART_WIDTH: 20,
 
-		SHIELD_START_ENERGY: 90,
+		SHIELD_START_ENERGY: 50,
+		SHIELD_START_ENERGY_INC: 5,
 		SHIELD_ACTIVE_REDUCE_ENERGY: 2,
 		SHIELD_ADD_ENERGY: 1,
 		SHIELD_MAX_ENERGY: 100,
@@ -102,14 +114,19 @@ var BELIEVE = function(game) {
 		OTHER_SPAWN_HEALTH: 100,
 		OTHER_HARM: 5,
 		OTHER_HARM_DELTA: 0.8,
+		OTHER_SPEEDSTER_LINE_COLOR: 0xaaaaaa,
 
 		LEVEL_SPONSOR: 500,
 		LEVEL_SPONSOR_HEALTH: -20,
 		LEVEL_SPONSOR_GRADE: 0.3,
+		LEVEL_SPEEDSTER: 1000,
+		LEVEL_SPEEDSTER_GRADE: 0.3,
+		LEVEL_SPEEDSTER_SPEED: 4,
 	};
 	this.OTHER_TYPES = {
 		basic: 0,
-		sponsor: 1
+		sponsor: 1,
+		speedster: 2
 	}
 }
 
@@ -122,6 +139,7 @@ BELIEVE.prototype = {
 	preload: function() {
 		this.game.load.bitmapFont('carrier_command', 'assets/carrier_command.png', 'assets/carrier_command.xml');
 		this.game.load.image('heart', 'assets/heart.png');
+		this.game.load.image('particle', 'assets/particle.png');
 	}, 
 
 	create: function() {
@@ -130,6 +148,14 @@ BELIEVE.prototype = {
 		this.score = 0;
 		this.game.stage.backgroundColor = this.CONF.STAGE_BACKGROUND;
 
+		this.energybar = this.game.add.graphics(this.game.world.width - 20, 0);
+		this.energybar.beginFill(0x666666, 1);
+		this.energybar.drawRect(0, 0, 20, this.game.world.height);
+
+		this.energylimit = this.game.add.graphics(this.game.world.width - 20, 0);
+		this.energylimit.beginFill(0xff0000, 1);
+		this.energylimit.drawRect(0, -2, 20, 4);
+
 		// create shield
 		this.shieldSprite = this.game.add.sprite(this.game.world.centerX, game.world.centerY);
 		this.game.physics.arcade.enable(this.shieldSprite);
@@ -137,14 +163,17 @@ BELIEVE.prototype = {
 		this.shieldSprite.addChild(this.shield);
 		this.shieldBound = this.game.make.graphics(0, 0);
 		this.shieldSprite.addChild(this.shieldBound);
-		this.shield.radius = this.CONF.SHIELD_RADIUS;
 		this.shieldBoundActive = this.game.make.graphics(0, 0);
 		this.shieldSprite.addChild(this.shieldBoundActive);
+		this.shieldBoundActive.visible = false;
+		this.shield.visible = false;
+
+		this.shield.radius = this.CONF.SHIELD_START_RADIUS;
 
 		this.drawShield();
 
-		this.shieldBoundActive.visible = false;
-		this.shield.visible = false;
+		this.emitter = this.game.add.emitter(0, 0, 20);
+		this.emitter.makeParticles("particle");
 
 		// create player
 		this.player = this.add.sprite(this.game.world.centerX, game.world.centerY);
@@ -179,11 +208,22 @@ BELIEVE.prototype = {
 		restart.inputEnabled = true;
 		restart.events.onInputDown.add(this.reset, this);
 
-		this.instructionboard = this.game.add.bitmapText(50, 50, 'carrier_command', 'WAIT TILL SHIELD IS READY', 12);
+		this.instructionboard = this.game.add.bitmapText(50, 300, 'carrier_command', 'WAIT TILL SHIELD IS READY', 12);
 
-		this.scoreboard = this.game.add.bitmapText(5, 5, 'carrier_command', '0', 6);
-		this.scorehint = this.game.add.bitmapText(5, 20, 'carrier_command', '', 20);
+		this.scoreboard = this.game.add.bitmapText(5, 5, 'carrier_command', '0', 10);
 		this.updateScoreBoard(0);
+
+		this.scorepop = this.game.add.group();
+
+		this.energylimitActivate = this.CONF.SHIELD_START_ENERGY;
+		this.setEnergyBar();
+		this.currentHarm = this.CONF.OTHER_HARM;
+	},
+
+	setEnergyBar: function() {
+		this.energybar.scale.y = this.player.energy / this.CONF.SHIELD_MAX_ENERGY;
+		this.energybar.position.y = this.game.world.height - this.energybar.height;
+		this.energylimit.y = this.game.world.height * (1 - this.energylimitActivate / this.CONF.SHIELD_MAX_ENERGY);
 	},
 
 	drawShield: function() {
@@ -208,7 +248,7 @@ BELIEVE.prototype = {
 		} 
 		// update values
 		// check shield state
-		if(this.cursors.down.isDown && (this.player.energy > this.CONF.SHIELD_START_ENERGY || this.shield.visible && this.player.energy > 0)) {
+		if(this.cursors.down.isDown && (this.player.energy >= this.energylimitActivate || this.shield.visible && this.player.energy > 0)) {
 			this.shield.visible = true;
 			this.player.energy -= this.CONF.SHIELD_ACTIVE_REDUCE_ENERGY;
 			if(this.instructions) {
@@ -228,6 +268,8 @@ BELIEVE.prototype = {
 			}
 		}
 
+		this.setEnergyBar();
+
 		// this.playerEnergy.scale.y = this.playerEnergy.scale.x = this.playerEnergy.alpha = this.player.energy / this.CONF.SHIELD_MAX_ENERGY;
 		this.shieldBound.alpha = this.shieldBoundActive.alpha = this.player.energy / this.CONF.SHIELD_MAX_ENERGY;
 
@@ -235,12 +277,13 @@ BELIEVE.prototype = {
 			if(other.position.distance(this.player.position) < other.radius + this.player.radius) {
 				if(other.otherType == this.OTHER_TYPES.sponsor && other.sponsor) {
 					this.instructionboard.text = "";
-					this.shield.radius += 10;
-					if(this.shield.radius > 200) {
-						this.updateScoreBoard(1000, true);
+					this.shield.radius += this.CONF.SHIELD_RADIUS_INC;
+					if(this.shield.radius > this.CONF.SHIELD_MAX_RADIUS) {
+						this.updateScoreBoard(1000, this.player);
 						this.shield.radius = this.CONF.SHIELD_RADIUS;
+						this.currentHarm += this.CONF.OTHER_HARM;
 					} else {
-						this.updateScoreBoard(200, true);
+						this.updateScoreBoard(200, this.player);
 					}
 					this.drawShield();
 					other.destroy();
@@ -269,6 +312,9 @@ BELIEVE.prototype = {
 		if(this.score > this.CONF.LEVEL_SPONSOR && Math.random() < this.CONF.LEVEL_SPONSOR_GRADE) {
 			other.otherType = this.OTHER_TYPES.sponsor;
 			lineColor = this.CONF.OTHER_SPONSOR_LINE_COLOR;
+		} else if(this.score > this.CONF.LEVEL_SPEEDSTER && Math.random() < this.CONF.LEVEL_SPEEDSTER_GRADE) {
+			other.otherType = this.OTHER_TYPES.speedster;
+			lineColor = this.CONF.OTHER_SPEEDSTER_LINE_COLOR;
 		}
 
 		var otherGraphics = this.game.add.graphics(0, 0);
@@ -280,13 +326,19 @@ BELIEVE.prototype = {
 		other.graphics = otherGraphics;
 
 		var rad = Math.random() * Math.PI * 2;
-		var x = Math.cos(rad) * this.CONF.OTHER_SPAWN_RADIUS + this.game.world.centerX;
-		var y = Math.sin(rad) * this.CONF.OTHER_SPAWN_RADIUS + this.game.world.centerY;
+		other.fX = Math.cos(rad);
+		other.fY = Math.sin(rad);
+		var x = other.fX * this.CONF.OTHER_SPAWN_RADIUS + this.game.world.centerX;
+		var y = other.fY * this.CONF.OTHER_SPAWN_RADIUS + this.game.world.centerY;
 		other.position.x = x;
 		other.position.y = y;
 		var spawnSpeed = this.spawnSpeed + this.CONF.OTHER_SPAWN_SPEED_RAND * Math.random();
-		other.body.velocity.x = -Math.cos(rad) * spawnSpeed;
-		other.body.velocity.y = -Math.sin(rad) * spawnSpeed;
+		if(this.learningSpeed >= 0) {
+			this.learningSpeed--;
+			spawnSpeed /= 2;
+		}
+		other.body.velocity.x = -other.fX * spawnSpeed;
+		other.body.velocity.y = -other.fY * spawnSpeed;
 		other.health = this.CONF.OTHER_SPAWN_HEALTH;
 		this.spawnEvent = this.game.time.events.add(this.respawn + Math.random() * this.CONF.RESPAWN_RAND, this.spawn, this);
 		this.respawn = Math.max(this.respawn - this.CONF.RESPAWN_INC, this.CONF.MIN_RESPAWN);
@@ -294,12 +346,20 @@ BELIEVE.prototype = {
 	},
 
 	harm: function(other) {
-		var amount = this.CONF.OTHER_HARM;
+		var amount = this.currentHarm;
 		other.health -= amount;
 		if(!other.sponsor) other.alpha = other.health / this.CONF.OTHER_SPAWN_HEALTH * this.CONF.OTHER_HARM_DELTA + (1 - this.CONF.OTHER_HARM_DELTA);
+		if(other.otherType == this.OTHER_TYPES.speedster) {
+			other.body.velocity.x += -other.fX * this.CONF.LEVEL_SPEEDSTER_SPEED;
+			other.body.velocity.y += -other.fY * this.CONF.LEVEL_SPEEDSTER_SPEED;
+		}
 
-		if(other.health < 0 && other.otherType == this.OTHER_TYPES.basic) {
+		if(other.health < 0 && other.otherType != this.OTHER_TYPES.sponsor) {
 			other.destroy();
+			this.emitter.x = other.x;
+			this.emitter.y = other.y;
+			this.emitter.start(true, 2000, null, 10);
+
 		} else if(other.otherType == this.OTHER_TYPES.sponsor && other.health < 0 && !other.sponsor) {
 			other.sponsor = true;
 			other.graphics.lineStyle(this.CONF.OTHER_LINE_WIDTH, this.CONF.OTHER_SPONSOR_LINE_COLOR, this.CONF.OTHER_LINE_ALPHA);
@@ -309,12 +369,16 @@ BELIEVE.prototype = {
 
 		} else if(other.otherType == this.OTHER_TYPES.sponsor && other.health < this.CONF.LEVEL_SPONSOR_HEALTH) {
 			other.destroy();
+			this.emitter.x = other.x;
+			this.emitter.y = other.y;
+			this.emitter.start(true, 2000, null, 10);
+
 		}
 
-		this.updateScoreBoard(amount, true);
+		this.updateScoreBoard(amount, other);
 	}, 
 
-	updateScoreBoard: function(amount, notify) {
+	updateScoreBoard: function(amount, sprite) {
 		if(this.score <= this.CONF.LEVEL_SPONSOR && this.score + amount > this.CONF.LEVEL_SPONSOR) {
 			this.instructionboard.text = "SOME WILL TURN, \n\nLET THEM TO YOUR HEART";
 		}
@@ -323,11 +387,24 @@ BELIEVE.prototype = {
 		while(score.length < 10) score = "0" + score;
 		this.scoreboard.text = score;
 
-		if(notify) {
-			this.game.time.events.remove(this.scorenotify);
-			this.scorehint.text = "+" + amount;
-			this.scorenotify = this.game.time.events.add(1000, function() {
-				this.scorehint.text = "";
+		if(this.score % 800 == 0) {
+			this.energylimitActivate = Math.min(this.energylimitActivate + this.CONF.SHIELD_START_ENERGY_INC, this.CONF.SHIELD_MAX_ENERGY);
+		}
+
+		if(sprite) {
+			var poptext = this.game.add.bitmapText(sprite.position.x - 25, sprite.position.y - 15, 'carrier_command', '+' + amount, 6);
+			this.scorepop.add(poptext);
+			var tween = game.add.tween(poptext).to(
+				{
+					y: this.scoreboard.y, // sprite.position.y + Math.random() * 200 - 100,
+					x: this.scoreboard.x + this.scoreboard.width - poptext.width //sprite.position.x + Math.random() * 200 - 100
+				}
+				, 400
+				, Phaser.Easing.LINEAR
+				, true
+			);
+			tween.onComplete.addOnce(function() {
+				poptext.destroy();
 			}, this);
 		}
 	},
